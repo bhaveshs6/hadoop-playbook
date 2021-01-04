@@ -1,0 +1,87 @@
+#!/usr/local/bin/ansible-playbook
+- hosts: hadoopcluster
+  vars:
+  - rpms:
+    - file: "jdk-8u171-linux-x64.rpm"
+      name: "java"
+    - file: "hadoop-1.2.1-1.x86_64.rpm"
+      name: "hadoop"
+  tasks:
+  - name: copy java and hadoop install files
+    copy:
+      src: "/root/{{ item.file }}"
+      dest: "/root/"
+    loop: "{{ rpms }}"
+  - name: install java and hadoop
+    command:
+      cmd: "rpm -hiv /root/{{ item.file }} --force"
+      creates: "/usr/bin/{{ item.name }}"
+    loop: "{{ rpms }}"
+
+
+- hosts: namenode
+  vars:
+  - x:
+    - file: "hdfs"
+      replace: "<property>\n<name>dfs.name.dir</name>\n<value>/nn</value>\n</property>"
+    - file: "core"
+      replace: "<property>\n<name>fs.default.name</name>\n<value>hdfs://0.0.0.0:9001</value>\n</property>"
+  - ports: [50010, 50020, 50070, 50075, 50475, 8020, 9000, 9001]
+
+  tasks:
+  - name: edit hdfs-site and core-site
+    replace:
+      path: "/etc/hadoop/{{ item.file }}-site.xml"
+      after: "<configuration>"
+      regexp: '^<\/configuration>'
+      replace: "{{ item.replace }}</configuration>"
+    loop: "{{ x }}"
+      
+  - name: format namenode
+    command: 
+      cmd: "hadoop namenode -format"
+      creates: /nn
+    ignore_errors: yes 
+
+  - name: start namenode 
+    block:
+    - name: Attempt to start namenode
+      command: "hadoop-daemon.sh start namenode"
+    rescue:
+    - name: Restart namenode
+      command: "hadoop-daemon.sh {{ item }} namenode"
+      loop: ["stop", "start"]
+    
+  - name: Allow ports
+    firewalld:
+      port: "{{ item }}/tcp"
+      state: enabled
+      immediate: yes
+      permanent: yes
+    loop: "{{ ports }}"
+
+
+- hosts: datanodes
+  vars:
+  - x:
+    - file: "hdfs"
+      replace: "<property>\n<name>dfs.data.dir</name>\n<value>/dn</value>\n</property>"
+    - file: "core"
+      replace: "<property>\n<name>fs.default.name</name>\n<value>hdfs://{{ groups['namenode'][0] }}:9001</value>\n</property>"
+  tasks:
+  - name: edit hdfs-site and core-site
+    replace:
+      path: "/etc/hadoop/{{ item.file }}-site.xml"
+      after: "<configuration>"
+      regexp: '^<\/configuration>$'
+      replace: "{{ item.replace }}</configuration>"
+    loop: "{{ x }}"
+
+  - name: start datanode
+    block:
+    - name: Attempt to start datanode
+      command: "hadoop-daemon.sh start datanode"
+    rescue:
+    - name: Restart datanode
+      command: "hadoop-daemon.sh {{ item }} datanode"
+      loop: ["stop", "start"]
